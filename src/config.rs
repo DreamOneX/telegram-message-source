@@ -8,6 +8,8 @@ use dashmap::DashMap;
 pub struct Config {
   #[educe(Default = false)]
   pub enable: bool,
+  #[educe(Default = "")]
+  pub locale: ArcStr,
   // A-z order
   pub bindings: DashMap<i64, ArcStr>,
   pub cipher: CipherConfig,
