@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use arcstr::ArcStr;
 use color_eyre::eyre::Result;
 use lateinit::LateInit;
@@ -12,7 +14,7 @@ use mesagisto_client::{
 };
 use teloxide::{types::ChatId, utils::html};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::trace;
+use tracing::{instrument, trace};
 
 use crate::{
   ext::{db::DbExt, err::LogResultExt},
@@ -29,7 +31,7 @@ pub fn recover() -> Result<()> {
         .recv(
           ArcStr::from(element.0.to_string()),
           &element.1,
-          server_msg_handler,
+          nats_handler,
         )
         .await
         .log_if_error("error when add callback handler");
@@ -55,9 +57,9 @@ pub fn del(target: i64) -> Result<()> {
   SERVER.unsub(&target.to_string().into());
   Ok(())
 }
-pub async fn server_msg_handler(message: nats::Message, target: ArcStr) -> Result<()> {
+#[instrument(skip_all)]
+pub async fn nats_handler(message: nats::Message, target: ArcStr) -> Result<()> {
   let target: i64 = target.parse()?;
-  trace!("接收到来自目标{}的消息", target);
   let packet = Packet::from_cbor(&message.payload);
   let packet = match packet {
     Ok(v) => v,
@@ -69,14 +71,14 @@ pub async fn server_msg_handler(message: nats::Message, target: ArcStr) -> Resul
   };
   match packet {
     either::Left(msg) => {
-      left_sub_handler(msg, target).await?;
+      msg_handler(msg, target).await?;
     }
     either::Right(_) => {}
   }
   Ok(())
 }
-
-async fn left_sub_handler(mut message: Message, target: i64) -> Result<()> {
+#[instrument(skip_all)]
+async fn msg_handler(mut message: Message, target: i64) -> Result<()> {
   let chat_id = ChatId(target);
   let sender_name = if message.profile.nick.is_some() {
     message.profile.nick.take().unwrap()
@@ -86,22 +88,13 @@ async fn left_sub_handler(mut message: Message, target: i64) -> Result<()> {
     base64_url::encode(&message.profile.id)
   };
 
+  let mut reunite_text = String::new();
   for single in message.chain {
-    trace!("正在处理消息链中的元素");
+    trace!(element = ?single,"正在处理消息链中的元素");
     match single {
       MessageType::Text { content } => {
-        let content = format!(
-          "{}:\n{}",
-          html::bold(sender_name.as_str()),
-          html::escape(content.as_str())
-        );
-        let receipt = if let Some(reply_to) = &message.reply {
-          let local_id = DB.get_msg_id_1(&target, reply_to)?;
-          TG_BOT.send_text(chat_id, content, local_id).await?
-        } else {
-          TG_BOT.send_text(chat_id, content, None).await?
-        };
-        DB.put_msg_id_1(&target, &message.id, &receipt.id)?;
+        reunite_text.write_str(&html::escape(content.as_str()))?;
+        reunite_text.write_str("\n")?;
       }
       MessageType::Image { id, url } => {
         let channel = CONFIG.mapper(&target).expect("频道不存在");
@@ -125,6 +118,20 @@ async fn left_sub_handler(mut message: Message, target: i64) -> Result<()> {
       MessageType::Edit { content: _ } => {}
       _ => {}
     }
+  }
+  if !reunite_text.is_empty() {
+    let content = format!(
+      "{}:\n{}",
+      html::bold(sender_name.as_str()),
+      html::escape(reunite_text.trim_end())
+    );
+    let receipt = if let Some(reply_to) = &message.reply {
+      let local_id = DB.get_msg_id_1(&target, reply_to)?;
+      TG_BOT.send_text(chat_id, content, local_id).await?
+    } else {
+      TG_BOT.send_text(chat_id, content, None).await?
+    };
+    DB.put_msg_id_1(&target, &message.id, &receipt.id)?;
   }
 
   Ok(())

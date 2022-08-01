@@ -5,10 +5,10 @@ use bot::TG_BOT;
 use color_eyre::eyre::Result;
 use futures::FutureExt;
 use mesagisto_client::MesagistoConfig;
+use rust_i18n::t;
+use self_update::Status;
 use teloxide::{prelude::*, types::ParseMode, Bot};
-use tracing::*;
 
-use self::message::handlers;
 use crate::config::{Config, CONFIG};
 
 #[macro_use]
@@ -17,42 +17,81 @@ extern crate educe;
 extern crate automatic_config;
 #[macro_use]
 extern crate singleton;
+#[macro_use]
+extern crate tracing;
+#[macro_use]
+extern crate rust_i18n;
+i18n!("locales");
+
 mod bot;
-mod command;
+pub mod commands;
 mod config;
 mod dispatch;
 pub mod ext;
+mod handlers;
 mod log;
-mod message;
 mod net;
+mod update;
+mod webhook;
 
 #[tokio::main]
-async fn main() -> Result<()>{
-
+async fn main() -> Result<()> {
   if cfg!(feature = "color") {
     color_eyre::install()?;
   } else {
     color_eyre::config::HookBuilder::new()
-    .theme(color_eyre::config::Theme::new())
-    .install()?;
+      .theme(color_eyre::config::Theme::new())
+      .install()?;
   }
-
-  self::log::init();
+  self::log::init().await?;
   run().await?;
   Ok(())
 }
 
 async fn run() -> Result<()> {
   Config::reload().await?;
+  if !&CONFIG.locale.is_empty() {
+    rust_i18n::set_locale(&CONFIG.locale);
+  } else {
+    use sys_locale::get_locale;
+    let locale = get_locale()
+      .unwrap_or_else(|| String::from("en-US"))
+      .replace('_', "-");
+    rust_i18n::set_locale(&locale);
+    info!(
+      "{}",
+      t!("log.locale-not-configured", locale_ = &locale)
+    );
+  }
   if !CONFIG.enable {
-    warn!("Mesagisto-Bot is not enabled and is about to exit the program.");
-    warn!("To enable it, please modify the configuration file.");
-    warn!("Mesagisto-Bot未被启用, 即将退出程序。");
-    warn!("若要启用，请修改配置文件。");
+    warn!("{}", t!("log.not-enable"));
+    warn!("{}", t!("log.not-enable-helper"));
     return Ok(());
   }
   CONFIG.migrate();
 
+  if cfg!(feature = "beta") {
+    std::env::set_var("GH_PRE_RELEASE", "1");
+    std::env::set_var("BYPASS_CHECK", "1");
+  }
+
+  if CONFIG.auto_update.enable {
+    tokio::task::spawn_blocking(|| {
+      match update::update() {
+        Ok(Status::UpToDate(_)) => {
+          info!("{}", t!("log.update-check-success"));
+        }
+        Ok(Status::Updated(_)) => {
+          info!("{}", t!("log.upgrade-success"));
+          std::process::exit(0);
+        }
+        Err(e) => {
+          error!("{}", e);
+        }
+      };
+    })
+    .await?;
+  }
   MesagistoConfig::builder()
     .name("tg")
     .cipher_key(CONFIG.cipher.key.clone())
@@ -74,10 +113,9 @@ async fn run() -> Result<()> {
     .apply()
     .await?;
   info!(
-    "Mesagisto信使正在启动, version: v{}",
-    env!("CARGO_PKG_VERSION")
+    "{}",
+    t!("log.boot-start", version = env!("CARGO_PKG_VERSION"))
   );
-
   let bot = Bot::with_client(CONFIG.telegram.token.clone(), net::client_from_config())
     .parse_mode(ParseMode::Html)
     .auto_send();
@@ -85,9 +123,14 @@ async fn run() -> Result<()> {
   TG_BOT.init(bot).await?;
 
   handlers::receive::recover()?;
-  dispatch::start(&TG_BOT).await;
-
+  tokio::spawn(async {
+    dispatch::start(&TG_BOT).await;
+  });
+  tokio::signal::ctrl_c().await?;
   CONFIG.save().await.expect("保存配置文件失败");
-  info!("Mesagisto信使即将关闭");
+  info!("{}", t!("log.shutdown"));
+
+  #[cfg(feature = "polylith")]
+  opentelemetry::global::shutdown_tracer_provider();
   Ok(())
 }

@@ -5,31 +5,34 @@ use teloxide::{
   utils::{command::BotCommands, html},
 };
 
-use crate::{bot::BotRequester, config::CONFIG, message::handlers};
+use crate::{bot::BotRequester, config::CONFIG, handlers};
 
 #[derive(BotCommands, Clone)]
-#[command(rename = "lowercase", description = "信使Bot支持以下命令")]
-pub enum Command {
-  #[command(description = "关于本项目")]
+#[command(
+  rename = "lowercase",
+  description = "MesagistoTG supports following commands"
+)]
+pub enum BindCommand {
+  #[command(description = "About")]
   About,
-  #[command(description = "解绑当前群组的转发地址")]
+  #[command(description = "Unbind the currunt's gruop binding")]
   Unbind,
-  #[command(description = "显示命令帮助")]
+  #[command(description = "Disaplay commands help")]
   Help,
-  #[command(description = "显示状态")]
+  #[command(description = "Disaplay status")]
   Status,
-  #[command(description = "绑定当前群组的转发地址", parse_with = "split")]
+  #[command(description = "Bind currunt's group to address", parse_with = "split")]
   Bind { address: String },
 }
-impl Command {
-  pub async fn answer(msg: Message, bot: BotRequester, cmd: Command) -> Result<()> {
+impl BindCommand {
+  pub async fn answer(msg: Message, bot: BotRequester, cmd: BindCommand) -> Result<()> {
     match cmd {
-      Command::Help => {
+      BindCommand::Help => {
         bot
-          .send_message(msg.chat.id, Command::descriptions().to_string())
+          .send_message(msg.chat.id, BindCommand::descriptions().to_string())
           .await?;
       }
-      Command::Bind { address } => {
+      BindCommand::Bind { address } => {
         let sender_id = msg.from().unwrap().id;
         let chat_id = msg.chat.id;
         let admins = bot.get_chat_administrators(chat_id).await?;
@@ -70,7 +73,7 @@ impl Command {
             .await?;
         }
       }
-      Command::Unbind => {
+      BindCommand::Unbind => {
         let sender_id = msg.from().unwrap().id;
         let chat_id = msg.chat.id;
         let admins = bot.get_chat_administrators(chat_id).await?;
@@ -101,7 +104,7 @@ impl Command {
             .await?;
         }
       }
-      Command::About => {
+      BindCommand::About => {
         let chat_id = msg.chat.id;
         bot
           .send_message(
@@ -117,7 +120,7 @@ impl Command {
           )
           .await?;
       }
-      Command::Status => {
+      BindCommand::Status => {
         let chat_id = msg.chat.id;
         bot
           .send_message(chat_id, html::strike("唔... 也许是在正常运行?"))
